@@ -1,0 +1,252 @@
+---
+title: 'Interactive Network Analysis of directors and actors '
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Being a movie fanatic, I thought it would be interesting to do a network analysis of actors and directors working together. I particularly wanted to see if any actor-director duo have an increased inclination towards working together. Thanks to Kaggle, where I obtained the IMDB 5000 movie dataset, I can find the answer to my question!  
+
+Although the original dataset I obtained has been removed by Kaggle, the original dataset can be found here at Dataworld.
+
+Based on the massive movie information available, I wanted to analyze and visualize the network of actors and directors working together and the number of times they have worked together.  
+
+## Data Exploration/ Loading/ 
+
+Loading the packages I would need for my analyses.  
+
+```{r, message=FALSE, warning= FALSE}
+# Loading packages
+library(dplyr) # data manipulation
+library(tidyr) # data tidying
+library(stringr)
+library(igraph) 
+library(visNetwork) # Interactive visualization
+```
+
+Now that the packages are loaded, I read and explored the movie dataset. I decided, it is a good idea to replace all blank cells, if any, with NAs while loading the dataset before proceeding with any further analyses. This is to ensure I can easily exclude fields with NAs during my analyses when needed.
+
+```{r}
+movie.data = read.csv('movie_metadata.csv', na.strings = c("","NA"), header = T)
+
+# Exploring the structure of the dataset
+str(movie.data)
+```
+
+There are 5043 observations and 28 variables. Since I am interested in working with the director_name and actor_name variables, I made sure they are in the format I want them to be. The director and actor variables are recognized as categorical, thus showing as factors. To ensure, I do not face any problems during my analysis, I converted them as characters before proceeding.
+
+```{r}
+# Converting the variables as a character
+movie.data$director_name = as.character(movie.data$director_name)
+movie.data$actor_1_name = as.character(movie.data$actor_1_name)
+movie.data$actor_2_name = as.character(movie.data$actor_2_name)
+movie.data$actor_3_name = as.character(movie.data$actor_3_name)
+```
+
+## Data Cleaning
+
+As we all know, data analytics is all about the data. If the quality of data is not upto mark, even the most complex and sophisticated analysis would generate inaccurate results, leading to drawing incorrect conclusions. It's like preparing the soil before planting a tree! So, I dedicated some good amount of time to explore, clean and process the dataset, so I can assure the tree growing on this soil is fruitful.
+
+In the dataset,there are some duplicate rows. I removed the duplicate rows and worked with the unique ones. 
+
+```{r}
+# Finding total number of duplicated rows
+sum(duplicated(movie.data))
+
+# Removing duplicates from the dataset
+movie.data = movie.data[!duplicated(movie.data),]
+```
+
+Now there are 4998 unique observations left. To further explore the data, I looked for missing values in each variable. As you would remember, while loading the data, I replaced all blank cells with NA. I used the colSums() function which returns the total number of NAs per column to see where and how much data is missing.
+
+```{r}
+# Finding total number of NAs per column
+colSums(sapply(movie.data, is.na)) 
+```
+
+Since I am doing a network analysis between directors and actors, I am more interested in the director_name and actors_x_name variables. 
+There are NAs in the director_name and actor_name column. Now for a proper network analysis, I would need both a director_name and an actor_name, since technically, there cannot be a relation with a blank/ a relation with a blank in non-existent, unless it's with a ghost. 
+
+I could have simply excluded all cases with NA. However, in doing so, I would lose way more entries, since there might be some directors who might have worked with only 2 actors, and since the actor_3_name variable would have NA, it would also be omitted, thus affecting the exact count of director_name. Therefore, I excluded entries with NA only in the director_name variable. 
+
+```{r}
+movie.data = movie.data %>% 
+  drop_na(director_name) 
+```
+
+## Data Tidying
+
+All the movie titles seemed to have a special character(Â) at end. Some also have some whitespaces. So I tidied them up using some regular expressions. I got to admit! Understanding regular expressions almost made me climb up the wall. But I think I've got a hang of it now, although, there's still lots to learn.
+
+```{r, results='hide'}
+# Replacing Â and whitespaces with blanks using gsub() functions
+movie.data$movie_title= gsub('Â','',movie.data$movie_title)
+movie.data$movie_title= gsub('^\\s*$','',movie.data$movie_title)
+
+# Removing the additional space at the end of the movie title
+str_trim(movie.data$movie_title,'right') 
+```
+
+Since there are about 5000 unique observations, one could imagine the complexity of the network between 5000 directors and the respective actors they have worked with in their movies. So in order to be able to humanely visualize and decipher the network, I selected only the well rated movies, i.e. having an IMDB_score of at least 8. 
+
+```{r}
+data = subset(movie.data,imdb_score >= 8)
+```
+
+## Network Analysis
+
+After all that data cleaning and tidying up, now this was the fun part! 
+
+The main aspect of networks are the numerous separate entities and the relation between them. The entities are called nodes or vertices, and the connections between them are called edges or links. 
+
+# Nodeslist
+
+The package I used to create the network objects for my network analysis is igraph. To begin with, I created lists of distinct directors and actors as a dataframe, which are going to be my network entities (nodes) in the graph. Since there are 3 columns observing the name of actors in a movie, I created a separate list of distinct actors for each actor_name column, and then used a full_join() to obatin a list of all unique actors. I created separate lists for directors and actors as I intendeded to make a two-mode network.
+
+The nodeslists contains a "names" column, containing the name of distinct directors and actors.
+
+```{r}
+# List of distinct directors (Nodes Set 1)
+directors = data %>% 
+  distinct(director_name) %>% 
+  rename(names = director_name)
+
+# List of distinct actors (Nodes Set 2)
+actors1 = data%>%
+  distinct(actor_1_name) %>%
+  rename(names=actor_1_name)
+actors2 = data%>%
+  distinct(actor_2_name) %>%
+  rename(names=actor_2_name)
+actors3 = data%>%
+  distinct(actor_3_name) %>%
+  rename(names=actor_3_name)
+
+actors = full_join(actors1,actors2, by="names")
+actors = full_join(actors,actors3, by="names")
+```
+
+I created 2 separate nodeslist for directors and actors, as I wanted to add/will be adding them separately into the function that will create the network objects. By doing so, I will be able to create a boolean "type" attibute that will indicate the difference between the actors and directors, and result in a bipartite graph object.  It is worth mentioning, there are a few directors who have worked as an actor in their own movie. So I removed their names from the actors list to avoid duplication of nodes. 
+
+```{r}
+# List of directors who were also actors in their movies
+subset(data, director_name==actor_1_name |director_name==actor_2_name | director_name==actor_3_name, 
+       select = c(director_name, actor_1_name,actor_2_name,actor_3_name))
+
+# List of actors after removal of the directors above
+actors = subset(actors, names != 'Ari Folman' &
+                   names != 'Clint Eastwood' &
+                   names != 'Jacques Perrin' &
+                   names != 'Michael Moore' &
+                   names != 'Quentin Tarantino' &
+                   names != 'Woody Allen' &
+                   names != 'Bill Melendez')
+```
+
+# Edgelist
+
+After obtaining the lists of distinct actors and directors, I created an edgelist in a similar fashion as creating the nodeslist of actors. Since there are 3 columns for actors, I created an edgelist for each actor column with directors. I also created a weight column that will count the number of times the actor-director duo have worked together. To create a single dataframe with the director-actor relation, I concatenated the 3 lists together using rbind().
+
+```{r}
+# relation between actor 1 and director
+edgelist_1 = data %>%  
+  group_by(director_name,actor_1_name, movie_title) %>%
+  summarise(weight = n()) %>%
+  ungroup() %>%
+  rename(actor_name = actor_1_name)
+
+# relation between actor 2 and director
+edgelist_2 = data %>%  
+  group_by(director_name, actor_2_name, movie_title) %>%
+  summarise(weight = n()) %>%
+  ungroup() %>%
+  rename(actor_name = actor_2_name)
+
+# relation between actor 3 and director
+edgelist_3 = data %>%  
+  group_by(director_name, actor_3_name, movie_title) %>%
+  summarise(weight = n()) %>%
+  ungroup() %>%
+  rename(actor_name = actor_3_name)
+
+# Merging the two edgelist together to get final edgelist, using rbind() function.
+edgelist = rbind(edgelist_1,edgelist_2,edgelist_3)
+
+# Removing links self 
+edgelist = subset(edgelist,director_name != actor_name) 
+```
+
+Like in the actors nodeslist, I excluded the relations existing within the same director to omit self edges. Currently the edgelist obtained consists of the names of the directors and actors who have worked together, the number of times they worked together and the movie they worked on. To simplify the edgelist obtained, I grouped the directors and actors to obtain a list with the movie titles in the same field and the weight column giving a total count of the movies. 
+
+```{r}
+edgelist = edgelist %>%
+  group_by(director_name, actor_name) %>%
+  summarise(movie_title= paste0(movie_title, collapse = ","), weight = n())
+edgelist_links = select(edgelist, director_name, actor_name)
+```
+
+# Creating network objects using igraph
+
+I used the graph.empty() function to create the network objetcs. Since I was interested in creating a bipartite network, I introduced a boolean "type" attribute in the nodeslist, which distinguishes the nodes for directors and actors.
+
+```{r}
+# Creating and introducing "type" attibute in the vertices
+bg = make_empty_graph()
+bg = add_vertices(bg,nv=length(directors$names), attr = list(name=directors$names, 
+                                                               type = rep(TRUE, length(directors$names))))
+bg = add_vertices(bg,nv=length(actors$names), attr = list(name=actors$names, 
+                                                             type= rep(FALSE, length(actors$names))))
+
+# Adding the edges
+edgeListVec <- as.vector(t(as.matrix(data.frame(edgelist_links))))
+bg <- add.edges(bg,edgeListVec)
+
+# Confirming if the graph object is bipartite
+is.bipartite(bg)
+```
+
+## Interative network visualization using visNetwork
+
+Once I confirmed the network objects I created were bipartite, I used the visNetwork package to create the interactive graph. Since I have already created my igraph network objects, I decided to use ____ visIgraph() to create the interactive graph, which renders a visNetwork network object from an igraph network object and directly plots an igraph object in visNetwork.
+
+Before plotting the graph, I assigned various attributes to the network object to include visual properties that will be used when plotting the network. 
+
+The resulting graph is quite fun to play with. Feel free to move the nodes around by clicks, and hover the mouse over the nodes to see the names of the movies they worked on together. You can also zoom in and out of the plot and move it around. 
+
+```{r}
+# Passing information to the network to have different colors for the types of nodes
+V(bg)$color = c('skyblue', 'tomato')[V(bg)$type+1] 
+
+# Setting the size of the nodes
+V(bg)$size = 20
+
+# Setting the labels displaying on the nodes
+E(bg)$title = edgelist$movie_title  # to display movie name upon hovering on the edges. Works fine
+
+# Changing the color of the edges
+E(bg)$color = 'gray'
+
+# Setting the width of the edges based on weight
+E(bg)$width = edgelist$weight # edge width based on weight from edgelist_final
+```
+
+Using the network objects I created, I obtained the graph below using visIgraph(). It is worth giving it a shot copying the R code below and trying it out for first hand experience to an interactive network plot. 
+
+![Network Graph](Network Plot.png
+)
+
+![Network Graph - Zoomed In](Network Plot- Highlighted.jpeg
+)
+
+Plotting the network to create an interactive graph
+visIgraph(bg, smooth = FALSE) %>%
+  visIgraphLayout(layout = 'layout.fruchterman.reingold') %>%
+  visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
+  visInteraction(hover = TRUE)
+  
+
+
